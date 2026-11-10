@@ -1,0 +1,7 @@
+# dsh-opencode-usage bundle patch: one host row over the web profile.
+# The row name resolves from the profile's own node_modules where
+# `dsh plugin --profile web add <spec>` installed this package; it must equal
+# the npm package name (YAML needs quotes — `@` cannot start a plain scalar).
+- insert:
+    - id: opencode-usage
+      name: "@codecrab/dsh-opencode-usage"

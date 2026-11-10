@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Provider usage",
+    "description": "Shows OpenCode Go quota (5 hours, week, month), DeepSeek balance, or a custom HTTP usage endpoint beside the model switcher."
+  }
+}

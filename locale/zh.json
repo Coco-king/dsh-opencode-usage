@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "提供方用量",
+    "description": "在模型切换器旁查看 OpenCode Go 套餐额度（5 小时、本周、本月）、DeepSeek 官方余额或自定义 HTTP 用量接口。"
+  }
+}

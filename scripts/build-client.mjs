@@ -1,0 +1,148 @@
+/**
+ * 客户端构建：把 lib/client-src/ 下的模块用 esbuild 打包回单个浏览器 bundle
+ * （lib/client.js）——DSH 的 client module system 只解析托管模块名，最终产物
+ * 必须是一个文件；拆分后的相对 require 由本脚本内联。
+ *
+ * 装载包装：esbuild 无法静态内联「函数形参名为 require 的内部调用」，因此本脚本
+ * 用 banner/footer 把打包结果整体包进
+ * `window.__ModuleLoader__.load({ id:'@codecrab/dsh-opencode-usage', factory:(require)=>… })`；
+ * 产物中的外部 require（react 等）在运行时绑定到这个 factory 形参。
+ *
+ * 特性：
+ *  - BUILD_TAG 按产物内容 sha1（前 7 位）注入（用于确认热更是否生效）；
+ *  - 自检：module-loader 桩加载 + 无相对 require 残留 + 线路 codec 契约；
+ *  - --watch：监听 client-src/ 增量重建。
+ *
+ * 用法：node scripts/build-client.mjs [--watch]
+ */
+
+import { createHash } from 'node:crypto'
+import { writeFileSync } from 'node:fs'
+import vm from 'node:vm'
+import esbuild from 'esbuild'
+
+const OUT = 'lib/client.js'
+const TAG_SENTINEL = '__DSH_TAG__'
+const ENTRY_ID = '@codecrab/dsh-opencode-usage'
+
+/** 装载包装：banner 打开 load({factory:(require)=>…})，footer 收尾并返回 exports。 */
+const LOAD_BANNER = `${'window.__ModuleLoader__.load({ id: '}${JSON.stringify(ENTRY_ID)}, factory: (require) => {\nvar module = { exports: {} };`
+const LOAD_FOOTER = `\nObject.defineProperty(module.exports, Symbol.toStringTag, { value: 'Module' });\nreturn module.exports;\n}});`
+
+/** 公共打包参数：单文件 cjs（经 banner/footer 包进 loader factory），外部依赖保持原位 require。 */
+function bundleOptions(plugins) {
+  return {
+    entryPoints: ['lib/client-src/main.js'],
+    outfile: OUT,
+    bundle: true,
+    format: 'cjs',
+    platform: 'browser',
+    target: ['es2020'],
+    external: ['react', 'react-dom', 'react-dom/client', '@deepseek-ai/dsh-client-ui-primitives'],
+    define: { __DSH_BUILD_TAG__: JSON.stringify(TAG_SENTINEL) },
+    banner: { js: LOAD_BANNER },
+    footer: { js: LOAD_FOOTER },
+    write: false,
+    logLevel: 'info',
+    ...(plugins !== undefined ? { plugins } : {}),
+  }
+}
+
+/** 输出文本 → 注入 BUILD_TAG + 落盘 + 自检。 */
+async function finalize(result) {
+  // Windows 上 esbuild 返回反斜杠绝对路径，统一成正斜杠再比。
+  const file = result.outputFiles.find(f => f.path === OUT || f.path.replaceAll('\\', '/').endsWith('/' + OUT))
+  if (file === undefined) throw new Error('build: no output file')
+  const text = file.text
+  const tag = createHash('sha1').update(text).digest('hex').slice(0, 7)
+  const out = text.replace(`"${TAG_SENTINEL}"`, JSON.stringify(tag))
+  writeFileSync(OUT, out)
+  await smokeCheck(out, tag)
+  console.log(`[build-client] ${OUT} written (BUILD_TAG ${tag})`)
+}
+
+/** 冒烟：语法 + 无相对 require 残留 + module-loader 桩加载 + 导出形状 + codec 契约。 */
+async function smokeCheck(code, tag) {
+  if (code.includes(tag) !== true) throw new Error('build: BUILD_TAG missing from output')
+  if (/require\(["']\.\.?\//.test(code)) throw new Error('build: relative require left in bundle (esbuild 未内联)')
+
+  let record = null
+  const document = {
+    querySelector: () => null,
+    createElement: () => ({ setAttribute: () => {}, remove: () => {}, textContent: '' }),
+    head: { appendChild: () => {} },
+    hidden: false,
+    visibilityState: 'visible',
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+  const fn = () => {}
+  const sandbox = {
+    console,
+    window: { __ModuleLoader__: { load: rec => { record = rec } } },
+    document,
+    navigator: { language: 'zh-CN' },
+    setTimeout, clearInterval, setInterval,
+    Symbol, Object, Array, String, Number, Boolean, Math, Date, JSON, Map, Set,
+  }
+  sandbox.globalThis = sandbox
+  vm.createContext(sandbox)
+  vm.runInContext(code, sandbox, { filename: OUT })
+
+  if (record === null || record.id !== ENTRY_ID) throw new Error('build: module-loader record not registered')
+  if (typeof record.factory !== 'function') throw new Error('build: factory missing')
+  const moduleStub = new Proxy({}, { get: (target, key) => (key === Symbol.toStringTag ? 'Module' : fn) })
+  const moduleExports = record.factory(spec => {
+    if (spec.startsWith('react') || spec === '@deepseek-ai/dsh-client-ui-primitives') return moduleStub
+    throw new Error(`build: unexpected external require "${spec}"`)
+  })
+  if (Array.isArray(moduleExports.inject) !== true || moduleExports.inject.join(',') !== 'remote') {
+    throw new Error('build: exports.inject wrong')
+  }
+  if (typeof moduleExports.apply !== 'function') throw new Error('build: exports.apply missing')
+  await checkCodecContract(moduleExports.apply)
+}
+
+/**
+ * 装载期自检：远端注入的 CONTRIBUTION 必须满足宿主的严格 codec 契约
+ * （mode:'strict' + create() 工厂），否则客户端 $mount 时契约对不上。
+ * 用桩 ctx 跑 apply，只为捕获传给 remote.$mount 的贡献清单。
+ */
+async function checkCodecContract(apply) {
+  let contribution = null
+  await apply({
+    remote: { $mount: value => { contribution = value; return async () => {} } },
+    effect: () => () => {},
+    get: () => undefined,
+    on: () => () => {},
+  })
+  if (contribution === null || !Array.isArray(contribution.descriptors)) {
+    throw new Error('build: remote.$mount did not receive a contribution')
+  }
+  for (const descriptor of contribution.descriptors) {
+    const codecs = [descriptor.result, ...descriptor.parameters.map(parameter => parameter.codec)]
+    for (const codec of codecs) {
+      if (codec.mode !== 'strict' || typeof codec.create !== 'function') {
+        throw new Error(`build: ${descriptor.id} codec has no create() factory`)
+      }
+    }
+  }
+}
+
+const watch = process.argv.includes('--watch')
+
+if (watch) {
+  const ctx = await esbuild.context(bundleOptions([{
+    name: 'dsh-opencode-usage-finalize',
+    setup(build) {
+      build.onEnd(async result => {
+        if (result.errors.length > 0) return
+        try { await finalize(result) } catch (error) { console.error('[build-client]', error.message) }
+      })
+    },
+  }]))
+  await ctx.watch()
+  console.log('[build-client] watching lib/client-src/ …')
+} else {
+  await finalize(await esbuild.build(bundleOptions()))
+}

@@ -18,6 +18,8 @@ dsh plugin --profile web add <本仓库路径>
 
 （发布后可用 `dsh plugin --profile web add @codecrab/dsh-opencode-usage`。）装完重启 profile 生效。bundle 声明了 `engines.dsh: ">=0.2.0 <0.3.0"`。
 
+安装时从本机 npm 源解析 `@deepseek-ai/*` 依赖：若该源是尚未同步这些包的镜像，请先切到 `https://registry.npmjs.org/`。
+
 ## 配置
 
 DeepSeek 官方与 OpenCode 提供方无需配置：按提供方 id 自动识别（`deepseek-official` → 官方余额，id 含 `opencode` → Go 套餐）。OpenCode 的 Key 解析顺序：设置→用量 中填写的值 → DSH 凭据库（`OPENCODE_GO_API_KEY`）→ 环境变量 `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` → `~/.local/share/opencode/auth.json`。

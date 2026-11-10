@@ -18,6 +18,8 @@ dsh plugin --profile web add <path-to-this-checkout>
 
 (or `dsh plugin --profile web add @codecrab/dsh-opencode-usage` once published). Restart the profile afterwards. The bundle declares `engines.dsh: ">=0.2.0 <0.3.0"`.
 
+Installation resolves `@deepseek-ai/*` dependencies from your npm registry: if it points at a mirror that has not synced them yet, switch it to `https://registry.npmjs.org/` first.
+
 ## Configuration
 
 DeepSeek official and OpenCode providers need no configuration: providers are detected by id (`deepseek-official` → official balance, any id containing `opencode` → Go quota). The OpenCode key is resolved in this order: the value in Settings → Usage → DSH credentials (`OPENCODE_GO_API_KEY`) → the `OPENCODE_GO_API_KEY` / `OPENCODE_API_KEY` environment variables → `~/.local/share/opencode/auth.json`.

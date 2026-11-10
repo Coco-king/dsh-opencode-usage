@@ -1,0 +1,2 @@
+# 仓库内与检出后一律使用 LF，不随本机 core.autocrlf 变化
+* text=auto eol=lf
